@@ -223,6 +223,14 @@ async def init_db():
             await conn.run_sync(lambda sync_conn: _ensure_sqlite_column(sync_conn, "threat_events", "assigned_to", "VARCHAR(100) DEFAULT NULL"))
             await conn.run_sync(lambda sync_conn: _ensure_sqlite_column(sync_conn, "threat_events", "resolution_notes", "TEXT DEFAULT NULL"))
             await conn.run_sync(lambda sync_conn: _ensure_sqlite_column(sync_conn, "threat_events", "resolved_at", "DATETIME DEFAULT NULL"))
+            await conn.run_sync(lambda sync_conn: _ensure_sqlite_column(sync_conn, "response_actions", "parameters", "JSON DEFAULT '{}'"))
+            await conn.run_sync(lambda sync_conn: _ensure_sqlite_column(sync_conn, "response_actions", "result", "JSON DEFAULT NULL"))
+            await conn.run_sync(lambda sync_conn: _ensure_sqlite_column(sync_conn, "response_actions", "error_message", "TEXT DEFAULT NULL"))
+            await conn.run_sync(lambda sync_conn: _ensure_sqlite_column(sync_conn, "response_actions", "automated", "BOOLEAN DEFAULT 1"))
+            await conn.run_sync(lambda sync_conn: _ensure_sqlite_column(sync_conn, "response_actions", "approved_by", "VARCHAR(100) DEFAULT NULL"))
+            await conn.run_sync(lambda sync_conn: _ensure_sqlite_column(sync_conn, "response_actions", "executed_at", "DATETIME DEFAULT NULL"))
+            await conn.run_sync(lambda sync_conn: _ensure_sqlite_column(sync_conn, "response_actions", "reverted_at", "DATETIME DEFAULT NULL"))
+            await conn.run_sync(lambda sync_conn: _ensure_sqlite_column(sync_conn, "response_actions", "reverted_by", "VARCHAR(100) DEFAULT NULL"))
 
 
 async def get_db() -> AsyncSession:

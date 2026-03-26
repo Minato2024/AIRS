@@ -1,6 +1,7 @@
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import List
+from typing import List, Optional
+from datetime import datetime, timedelta
 
 from app.models.database import get_db
 from app.models.schemas import HoneypotLog, DetectionResult
@@ -20,6 +21,57 @@ def set_services(de: DetectionEngine, ro: ResponseOrchestrator):
     global detection_engine, response_orchestrator
     detection_engine = de
     response_orchestrator = ro
+
+
+@router.get("/sessions")
+async def list_honeypot_sessions(
+    hours: int = Query(default=24, ge=1, le=168),
+    honeypot_type: Optional[str] = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    List recent honeypot sessions for frontend inspection.
+    """
+    from sqlalchemy import select
+    from app.models.database import HoneypotSession
+
+    since = datetime.utcnow() - timedelta(hours=hours)
+
+    stmt = select(HoneypotSession).where(
+        HoneypotSession.start_time >= since
+    ).order_by(HoneypotSession.start_time.desc())
+
+    if honeypot_type:
+        stmt = stmt.where(HoneypotSession.honeypot_type == honeypot_type)
+
+    stmt = stmt.offset(offset).limit(limit)
+    result = await db.execute(stmt)
+    sessions = result.scalars().all()
+
+    return {
+        "total": len(sessions),
+        "time_window_hours": hours,
+        "sessions": [
+            {
+                "id": session.id,
+                "session_id": session.session_id,
+                "honeypot_type": session.honeypot_type,
+                "source_ip": session.source_ip,
+                "source_port": session.source_port,
+                "destination_port": session.destination_port,
+                "protocol": session.protocol,
+                "start_time": session.start_time,
+                "end_time": session.end_time,
+                "username": session.username,
+                "commands": session.commands or [],
+                "payload": session.payload,
+                "meta_data": session.meta_data or {}
+            }
+            for session in sessions
+        ]
+    }
 
 
 @router.post("/ingest", response_model=DetectionResult)
