@@ -13,6 +13,7 @@ import glob
 
 from app.models.schemas import AttackType, HoneypotLog, DetectionResult, ThreatLevel
 from app.config import settings
+from app.services.mitre_attack import get_attack_mapping, resolve_attack_mapping, resolve_attack_mappings
 
 logger = structlog.get_logger()
 
@@ -137,7 +138,7 @@ class DetectionEngine:
                     signature_id=sig_match["id"],
                     attack_type=sig_match["attack_type"],
                 )
-                return self._create_signature_result(sig_match, features)
+                return self._create_signature_result(log, sig_match, features)
 
             logger.info(
                 "Signature route produced no match, falling back to anomaly detection",
@@ -212,7 +213,8 @@ class DetectionEngine:
                 detection_method="anomaly",
                 anomaly_score=anomaly_score,
                 features=features,
-                mitre_mapping=self._map_to_mitre(attack_type.value),
+                mitre_mapping=self._map_to_mitre(attack_type.value, log=log, features=features),
+                mitre_mappings=self._map_to_mitre_list(attack_type.value, log=log, features=features),
                 recommendation=f"Trained model detected {attack_type.value} with {attack_confidence:.1%} confidence"
             )
         
@@ -366,7 +368,7 @@ class DetectionEngine:
         ]
         return np.array(ordered)
     
-    def _create_signature_result(self, match: Dict, features: Dict) -> DetectionResult:
+    def _create_signature_result(self, log: HoneypotLog, match: Dict, features: Dict) -> DetectionResult:
         return DetectionResult(
             threat_detected=True,
             threat_level=match["threat_level"],
@@ -375,7 +377,8 @@ class DetectionEngine:
             detection_method="signature",
             signature_match=match["id"],
             features=features,
-            mitre_mapping=self._map_to_mitre(match["attack_type"])
+            mitre_mapping=self._map_to_mitre(match["attack_type"], log=log, features=features, signature_match=match["id"]),
+            mitre_mappings=self._map_to_mitre_list(match["attack_type"], log=log, features=features, signature_match=match["id"]),
         )
     
     def _create_ml_result(self, anomaly: Dict, classification: Dict, features: Dict) -> DetectionResult:
@@ -392,15 +395,22 @@ class DetectionEngine:
             mitre_mapping=self._map_to_mitre(classification["type"])
         )
     
-    def _map_to_mitre(self, attack_type: str) -> Dict[str, str]:
-        """Map attack type to MITRE ATT&CK framework"""
-        mapping = {
-            "brute_force": {"tactic": "Credential Access", "technique": "T1110"},
-            "malware": {"tactic": "Execution", "technique": "T1204"},
-            "exploitation": {"tactic": "Initial Access", "technique": "T1190"},
-            "reconnaissance": {"tactic": "Reconnaissance", "technique": "T1595"},
-        }
-        return mapping.get(attack_type, {"tactic": "Unknown", "technique": "T0000"})
+    def _map_to_mitre(self, attack_type: str, log: HoneypotLog = None, features: Dict[str, Any] = None, signature_match: str = None) -> Dict[str, str]:
+        """Map attack type to Enterprise MITRE ATT&CK tactic/technique metadata."""
+        if log is not None:
+            refined = resolve_attack_mapping(attack_type, log, features=features, signature_match=signature_match)
+            if refined:
+                return refined
+        return get_attack_mapping(attack_type)
+
+    def _map_to_mitre_list(self, attack_type: str, log: HoneypotLog = None, features: Dict[str, Any] = None, signature_match: str = None) -> List[Dict[str, str]]:
+        if log is not None:
+            refined = resolve_attack_mappings(attack_type, log, features=features, signature_match=signature_match)
+            if refined:
+                return refined
+
+        base = get_attack_mapping(attack_type)
+        return [base] if base else []
 
     async def cleanup(self):
         """Cleanup resources"""

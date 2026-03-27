@@ -6,6 +6,12 @@ from datetime import datetime, timedelta
 from app.models.database import get_db
 from app.models.schemas import DashboardStats, ThreatAlert, TimeSeriesData
 from app.core.logging import get_logger
+from app.services.mitre_attack import (
+    ENTERPRISE_TACTICS,
+    TACTIC_BY_NAME,
+    TOTAL_ENTERPRISE_TACTICS,
+    TOTAL_ENTERPRISE_TECHNIQUES,
+)
 
 router = APIRouter()
 logger = get_logger("airs.api.dashboard")
@@ -126,6 +132,7 @@ async def get_dashboard_stats(
             details={
                 "mitre_tactic": t.mitre_tactic,
                 "mitre_technique": t.mitre_technique,
+                "mitre_mappings": t.mitre_mappings or [],
                 "signature_match": t.signature_match
             }
         )
@@ -200,40 +207,79 @@ async def get_mitre_coverage(
     from sqlalchemy import func, select
     from app.models.database import ThreatEvent
     
-    # Tactics coverage
-    tactics_stmt = select(
-        ThreatEvent.mitre_tactic,
-        func.count(ThreatEvent.id)
-    ).where(
-        ThreatEvent.mitre_tactic.isnot(None)
-    ).group_by(ThreatEvent.mitre_tactic)
+    events_result = await db.execute(
+        select(
+            ThreatEvent.mitre_tactic,
+            ThreatEvent.mitre_technique,
+            ThreatEvent.mitre_mappings,
+        ).where(
+            (ThreatEvent.mitre_tactic.isnot(None)) |
+            (ThreatEvent.mitre_technique.isnot(None)) |
+            (ThreatEvent.mitre_mappings.isnot(None))
+        )
+    )
+    tactic_counts = {}
+    technique_counts = {}
+    for tactic_name, technique_id, mappings in events_result.all():
+        if mappings:
+            for mapping in mappings:
+                mapped_tactic = mapping.get("tactic")
+                mapped_technique = mapping.get("technique_id")
+                if mapped_tactic and mapped_tactic != "Unknown":
+                    tactic_counts[mapped_tactic] = tactic_counts.get(mapped_tactic, 0) + 1
+                if mapped_technique and mapped_technique.startswith("T"):
+                    technique_counts[mapped_technique] = technique_counts.get(mapped_technique, 0) + 1
+        else:
+            if tactic_name and tactic_name != "Unknown":
+                tactic_counts[tactic_name] = tactic_counts.get(tactic_name, 0) + 1
+            if technique_id and technique_id.startswith("T"):
+                technique_counts[technique_id] = technique_counts.get(technique_id, 0) + 1
     
-    tactics_result = await db.execute(tactics_stmt)
-    tactics_coverage = {
-        tactic: count for tactic, count in tactics_result.all()
-    }
-    
-    # Techniques coverage
-    techniques_stmt = select(
-        ThreatEvent.mitre_technique,
-        func.count(ThreatEvent.id)
-    ).where(
-        ThreatEvent.mitre_technique.isnot(None)
-    ).group_by(ThreatEvent.mitre_technique)
-    
-    techniques_result = await db.execute(techniques_stmt)
-    techniques_coverage = {
-        technique: count for technique, count in techniques_result.all()
-    }
-    
+    observed_tactic_ids = set()
+    tactic_breakdown = []
+    for tactic_name, observed_count in tactic_counts.items():
+        tactic_meta = TACTIC_BY_NAME.get(tactic_name)
+        if tactic_meta:
+            observed_tactic_ids.add(tactic_meta["id"])
+            tactic_breakdown.append({
+                "id": tactic_meta["id"],
+                "name": tactic_meta["name"],
+                "url": tactic_meta["url"],
+                "technique_count": tactic_meta["technique_count"],
+                "observed_count": observed_count,
+            })
+
+    technique_breakdown = [
+        {
+            "id": technique_id,
+            "url": f"https://attack.mitre.org/techniques/{technique_id}/",
+            "observed_count": count,
+        }
+        for technique_id, count in technique_counts.items()
+        if technique_id and technique_id.startswith("T")
+    ]
+
+    tactic_coverage_percentage = round(
+        len(observed_tactic_ids) / TOTAL_ENTERPRISE_TACTICS * 100, 2
+    ) if observed_tactic_ids else 0
+    technique_coverage_percentage = round(
+        len(technique_breakdown) / TOTAL_ENTERPRISE_TECHNIQUES * 100, 2
+    ) if technique_breakdown else 0
+
     return {
-        "tactics_observed": len(tactics_coverage),
-        "techniques_observed": len(techniques_coverage),
-        "tactics_coverage": tactics_coverage,
-        "techniques_coverage": techniques_coverage,
-        "coverage_percentage": round(
-            len(tactics_coverage) / 14 * 100, 2  # 14 core MITRE tactics
-        ) if tactics_coverage else 0
+        "framework": "MITRE ATT&CK Enterprise",
+        "framework_url": "https://attack.mitre.org/matrices/enterprise/",
+        "matrix_version_note": "Coverage is calculated against the Enterprise ATT&CK matrix tactic catalog bundled with AIRS.",
+        "total_tactics": TOTAL_ENTERPRISE_TACTICS,
+        "total_techniques": TOTAL_ENTERPRISE_TECHNIQUES,
+        "tactics_observed": len(observed_tactic_ids),
+        "techniques_observed": len(technique_breakdown),
+        "tactic_coverage_percentage": tactic_coverage_percentage,
+        "technique_coverage_percentage": technique_coverage_percentage,
+        "coverage_percentage": tactic_coverage_percentage,
+        "tactic_breakdown": tactic_breakdown,
+        "technique_breakdown": technique_breakdown,
+        "matrix_tactics": ENTERPRISE_TACTICS,
     }
 
 

@@ -135,6 +135,7 @@ async def list_threats(
                 "attack_type": t.attack_type.value,
                 "confidence_score": t.confidence_score,
                 "detection_method": t.detection_method,
+                "mitre_mappings": t.mitre_mappings or [],
                 "status": t.status
             }
             for t in threats
@@ -174,6 +175,7 @@ async def get_threat_details(
         "features": threat.features,
         "mitre_tactic": threat.mitre_tactic,
         "mitre_technique": threat.mitre_technique,
+        "mitre_mappings": threat.mitre_mappings or [],
         "status": threat.status,
         "assigned_to": threat.assigned_to,
         "resolution_notes": threat.resolution_notes,

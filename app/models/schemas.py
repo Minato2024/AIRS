@@ -55,6 +55,7 @@ class DetectionResult(BaseModel):
     signature_match: Optional[str] = None
     anomaly_score: Optional[float] = None
     mitre_mapping: Optional[Dict[str, str]] = None
+    mitre_mappings: List[Dict[str, str]] = Field(default_factory=list)
     features: Dict[str, Any] = Field(default_factory=dict)
     recommendation: Optional[str] = None
 

@@ -317,7 +317,8 @@ async def store_threat_event(db: AsyncSession, log: HoneypotLog, detection: Dete
         features=detection.features,
         raw_data=log.json() if hasattr(log, 'json') else str(log),
         mitre_tactic=detection.mitre_mapping.get("tactic") if detection.mitre_mapping else None,
-        mitre_technique=detection.mitre_mapping.get("technique") if detection.mitre_mapping else None
+        mitre_technique=detection.mitre_mapping.get("technique_id") if detection.mitre_mapping else None,
+        mitre_mappings=make_json_safe(detection.mitre_mappings),
     )
     db.add(event)
     await db.commit()
@@ -439,6 +440,7 @@ async def broadcast_realtime_alert(threat_event, detection: DetectionResult):
             "signature_match": detection.signature_match,
             "mitre_tactic": threat_event.mitre_tactic,
             "mitre_technique": threat_event.mitre_technique,
+            "mitre_mappings": threat_event.mitre_mappings or detection.mitre_mappings,
         },
     )
     await broadcast_threat_alert(alert)

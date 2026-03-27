@@ -101,6 +101,7 @@ class ThreatEvent(Base):
     # MITRE ATT&CK mapping
     mitre_tactic = Column(String(100), nullable=True)
     mitre_technique = Column(String(20), nullable=True)
+    mitre_mappings = Column(JSON, default=list)
     
     # Status tracking
     status = Column(String(20), default="detected")
@@ -223,6 +224,7 @@ async def init_db():
             await conn.run_sync(lambda sync_conn: _ensure_sqlite_column(sync_conn, "threat_events", "assigned_to", "VARCHAR(100) DEFAULT NULL"))
             await conn.run_sync(lambda sync_conn: _ensure_sqlite_column(sync_conn, "threat_events", "resolution_notes", "TEXT DEFAULT NULL"))
             await conn.run_sync(lambda sync_conn: _ensure_sqlite_column(sync_conn, "threat_events", "resolved_at", "DATETIME DEFAULT NULL"))
+            await conn.run_sync(lambda sync_conn: _ensure_sqlite_column(sync_conn, "threat_events", "mitre_mappings", "JSON DEFAULT '[]'"))
             await conn.run_sync(lambda sync_conn: _ensure_sqlite_column(sync_conn, "response_actions", "parameters", "JSON DEFAULT '{}'"))
             await conn.run_sync(lambda sync_conn: _ensure_sqlite_column(sync_conn, "response_actions", "result", "JSON DEFAULT NULL"))
             await conn.run_sync(lambda sync_conn: _ensure_sqlite_column(sync_conn, "response_actions", "error_message", "TEXT DEFAULT NULL"))

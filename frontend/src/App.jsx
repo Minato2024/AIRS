@@ -502,19 +502,19 @@ function App() {
               <div className="coverage-grid">
                 <div className="coverage-cell">
                   <span>Tactics observed</span>
-                  <strong>{mitre?.tactics_observed ?? 0}</strong>
+                  <strong>{mitre?.tactics_observed ?? 0}/{mitre?.total_tactics ?? 14}</strong>
                 </div>
                 <div className="coverage-cell">
                   <span>Techniques observed</span>
-                  <strong>{mitre?.techniques_observed ?? 0}</strong>
+                  <strong>{mitre?.techniques_observed ?? 0}/{mitre?.total_techniques ?? 0}</strong>
                 </div>
                 <div className="coverage-cell coverage-cell-wide">
-                  <span>Coverage score</span>
-                  <strong>{formatAbsolutePercent(mitre?.coverage_percentage)}</strong>
+                  <span>Tactic coverage</span>
+                  <strong>{formatAbsolutePercent(mitre?.tactic_coverage_percentage ?? mitre?.coverage_percentage)}</strong>
                 </div>
               </div>
               <div className="meter">
-                <div className="meter-fill" style={{ width: `${Number(mitre?.coverage_percentage ?? 0)}%` }} />
+                <div className="meter-fill" style={{ width: `${Number(mitre?.tactic_coverage_percentage ?? mitre?.coverage_percentage ?? 0)}%` }} />
               </div>
             </section>
           </section>
@@ -644,6 +644,20 @@ function App() {
                   <span className="detail-label">MITRE mapping</span>
                   <strong>{selectedThreat.mitre_tactic || selectedThreat.mitre_technique ? `${selectedThreat.mitre_tactic || 'No tactic'} / ${selectedThreat.mitre_technique || 'No technique'}` : 'No MITRE mapping attached'}</strong>
                 </div>
+                {selectedThreat.mitre_mappings?.length > 0 && (
+                  <div className="detail-card">
+                    <span className="detail-label">ATT&CK techniques</span>
+                    <div className="mapping-list">
+                      {selectedThreat.mitre_mappings.map((mapping, index) => (
+                        <div key={`${mapping.technique_id}-${index}`} className="mapping-row">
+                          <strong>{mapping.technique_id}</strong>
+                          <span>{mapping.technique}</span>
+                          <span>{mapping.tactic}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 <div className="action-row">
                   <button className="action-button" disabled={threatUpdateBusy} onClick={() => handleThreatStatusUpdate(selectedThreat.id, 'investigating')}>Mark investigating</button>
                   <button className="action-button success" disabled={threatUpdateBusy} onClick={() => handleThreatStatusUpdate(selectedThreat.id, 'resolved')}>Resolve</button>
@@ -861,7 +875,7 @@ function App() {
             </div>
             <div className="meta-card">
               <span className="meta-label">Coverage</span>
-              <strong>{formatAbsolutePercent(mitre?.coverage_percentage)}</strong>
+              <strong>{formatAbsolutePercent(mitre?.tactic_coverage_percentage ?? mitre?.coverage_percentage)}</strong>
             </div>
           </div>
 

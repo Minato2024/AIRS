@@ -826,6 +826,25 @@ tbody tr.is-selected {
   gap: 12px;
 }
 
+.mapping-list {
+  display: grid;
+  gap: 10px;
+}
+
+.mapping-row {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.4);
+}
+
+.mapping-row span {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 .feed-badge {
   width: fit-content;
   padding: 5px 10px;
