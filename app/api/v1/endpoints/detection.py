@@ -220,5 +220,15 @@ async def update_threat_status(
         new_status=status,
         assigned_to=assigned_to
     )
+    from app.api.v1.endpoints.dashboard import broadcast_stats_update, broadcast_system_event
+    await broadcast_stats_update()
+    await broadcast_system_event(
+        "threat_status_changed",
+        {
+            "threat_id": threat_id,
+            "status": status,
+            "assigned_to": assigned_to,
+        },
+    )
     
     return {"message": "Threat status updated", "threat_id": threat_id, "status": status}

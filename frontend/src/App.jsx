@@ -1,4 +1,4 @@
-import { Suspense, lazy, startTransition, useEffect, useMemo, useState } from 'react'
+import { Suspense, lazy, startTransition, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity,
   AlertTriangle,
@@ -49,6 +49,17 @@ function formatTimestamp(value) {
     hour: '2-digit',
     minute: '2-digit',
   })
+}
+
+function formatUtcPlusOneTime(value) {
+  if (!value) return 'No time'
+
+  return new Intl.DateTimeFormat('en-GB', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+    timeZone: 'Africa/Lagos',
+  }).format(new Date(value))
 }
 
 function labelize(value) {
@@ -105,14 +116,12 @@ function App() {
     response_cooldown_seconds: 300,
   })
   const [settingsBusy, setSettingsBusy] = useState(false)
+  const refreshTimeoutRef = useRef(null)
 
   const timelineData = useMemo(
     () =>
       timeline.map((item) => ({
-        time: new Date(item.timestamp).toLocaleTimeString([], {
-          hour: '2-digit',
-          minute: '2-digit',
-        }),
+        time: formatUtcPlusOneTime(item.timestamp),
         threats: item.value,
         timestamp: item.timestamp,
       })),
@@ -280,6 +289,15 @@ function App() {
     let ws
     let reconnectTimer
 
+    const scheduleRealtimeRefresh = () => {
+      if (refreshTimeoutRef.current) return
+
+      refreshTimeoutRef.current = setTimeout(() => {
+        refreshTimeoutRef.current = null
+        loadAllData({ silent: true })
+      }, 600)
+    }
+
     const connectWs = () => {
       const backendHost = window.location.hostname || 'localhost'
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -302,6 +320,14 @@ function App() {
             ...messages,
             { type: data.type || 'message', text: JSON.stringify(data) },
           ])
+
+          if (
+            ['new_threat', 'stats_update', 'pipeline_event', 'response_updated', 'settings_updated', 'threat_status_changed'].includes(
+              data.type,
+            )
+          ) {
+            scheduleRealtimeRefresh()
+          }
         } catch {
           setSocketMessages((messages) => [
             ...messages,
@@ -330,6 +356,7 @@ function App() {
 
     return () => {
       if (reconnectTimer) clearTimeout(reconnectTimer)
+      if (refreshTimeoutRef.current) clearTimeout(refreshTimeoutRef.current)
       if (ws) ws.close()
     }
   }, [])
@@ -391,9 +418,19 @@ function App() {
               </p>
             </div>
             <div className="hero-rail">
-              <div className={`status-chip ${backendHealthy ? 'healthy' : 'degraded'}`}>
-                <span className="status-icon">{backendHealthy ? <Wifi size={14} /> : <WifiOff size={14} />}</span>
-                <span>Backend {health?.status ?? 'unknown'}</span>
+              <div className="hero-toolbar">
+                <div className={`status-chip ${backendHealthy ? 'healthy' : 'degraded'}`}>
+                  <span className="status-icon">{backendHealthy ? <Wifi size={14} /> : <WifiOff size={14} />}</span>
+                  <span>Backend {health?.status ?? 'unknown'}</span>
+                </div>
+                <button
+                  className="refresh-icon-button"
+                  onClick={() => loadAllData({ silent: true })}
+                  aria-label={refreshing ? 'Refreshing data' : 'Refresh data'}
+                  title={refreshing ? 'Refreshing data' : 'Refresh data'}
+                >
+                  <RefreshCcw size={16} className={refreshing ? 'spin' : ''} />
+                </button>
               </div>
               <div className="hero-grid">
                 <div className="highlight-card accent">
@@ -783,7 +820,17 @@ function App() {
             </div>
             <div>
               <p className="eyebrow">AIRS Platform</p>
-              <h2>Adaptive Intrusion Response System</h2>
+              <div className="brand-title-row">
+                <h2>Adaptive Intrusion Response System</h2>
+                <button
+                  className="theme-icon-toggle"
+                  onClick={() => setDarkMode((value) => !value)}
+                  aria-label={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
+                  title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
+                >
+                  {darkMode ? <Sun size={16} /> : <Moon size={16} />}
+                </button>
+              </div>
               <p className="brand-copy">
                 Move from monitoring to action with linked detection, honeypot, and response views.
               </p>
@@ -819,15 +866,6 @@ function App() {
           </div>
 
           <div className="sidebar-actions">
-            <button className="theme-toggle" onClick={() => setDarkMode((value) => !value)}>
-              {darkMode ? <Sun size={16} /> : <Moon size={16} />}
-              <span>{darkMode ? 'Switch to light mode' : 'Switch to dark mode'}</span>
-            </button>
-
-            <button className="refresh-button" onClick={() => loadAllData({ silent: true })}>
-              <RefreshCcw size={16} className={refreshing ? 'spin' : ''} />
-              <span>{refreshing ? 'Refreshing...' : 'Refresh data'}</span>
-            </button>
           </div>
         </aside>
 

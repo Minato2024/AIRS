@@ -86,6 +86,16 @@ async def unblock_ip(
     # This would call your response orchestrator or firewall integration
     
     logger.info("IP manually unblocked", ip_address=ip_address, reason=reason)
+    from app.api.v1.endpoints.dashboard import broadcast_stats_update, broadcast_system_event
+    await broadcast_stats_update()
+    await broadcast_system_event(
+        "response_updated",
+        {
+            "event": "ip_unblocked",
+            "ip_address": ip_address,
+            "reason": reason,
+        },
+    )
     
     return {"message": f"IP {ip_address} unblocked successfully"}
 
@@ -221,6 +231,17 @@ async def execute_manual_response(
         action_type=action_type,
         target=target
     )
+    from app.api.v1.endpoints.dashboard import broadcast_stats_update, broadcast_system_event
+    await broadcast_stats_update()
+    await broadcast_system_event(
+        "response_updated",
+        {
+            "event": "manual_response_executed",
+            "threat_event_id": threat_event_id,
+            "action_type": action_type,
+            "target": target,
+        },
+    )
     
     return {
         "message": "Manual response executed",
@@ -267,6 +288,14 @@ async def update_response_settings(
         "Response settings updated",
         auto_response=settings.AUTO_RESPONSE_ENABLED,
         cooldown=settings.RESPONSE_COOLDOWN_SECONDS
+    )
+    from app.api.v1.endpoints.dashboard import broadcast_system_event
+    await broadcast_system_event(
+        "settings_updated",
+        {
+            "auto_response_enabled": settings.AUTO_RESPONSE_ENABLED,
+            "response_cooldown_seconds": settings.RESPONSE_COOLDOWN_SECONDS,
+        },
     )
     
     return {

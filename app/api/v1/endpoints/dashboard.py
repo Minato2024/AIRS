@@ -342,3 +342,12 @@ async def broadcast_stats_update():
         "type": "stats_update",
         "timestamp": datetime.utcnow().isoformat()
     })
+
+
+async def broadcast_system_event(event_type: str, payload: dict | None = None):
+    """Broadcast a generic backend event to connected dashboard clients."""
+    await manager.broadcast({
+        "type": event_type,
+        "timestamp": datetime.utcnow().isoformat(),
+        "data": payload or {}
+    })

@@ -3,8 +3,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional
 from datetime import datetime, timedelta
 
-from app.models.database import get_db
-from app.models.schemas import HoneypotLog, DetectionResult
+from app.models.database import async_session, get_db
+from app.models.schemas import HoneypotLog, DetectionResult, ThreatAlert
 from app.services.detection_engine import DetectionEngine
 from app.services.response_orchestrator import ResponseOrchestrator
 from app.core.logging import get_logger
@@ -89,12 +89,40 @@ async def ingest_honeypot_log(
         source_ip=log.source_ip,
         event_type=log.event_type
     )
+    await store_system_log(
+        db,
+        level="INFO",
+        component="honeypot_ingest",
+        message="Honeypot log received",
+        source_ip=log.source_ip,
+        session_id=log.session_id,
+        details={
+            "honeypot_type": log.honeypot_type,
+            "event_type": log.event_type,
+            "protocol": log.protocol,
+        },
+    )
     
     # Step 1: Store raw log
     await store_honeypot_session(db, log)
     
     # Step 2: Analyze for threats
     result = await detection_engine.analyze(log)
+    await store_system_log(
+        db,
+        level="INFO",
+        component="detection_pipeline",
+        message="Detection pipeline completed",
+        source_ip=log.source_ip,
+        session_id=log.session_id,
+        details={
+            "threat_detected": result.threat_detected,
+            "detection_method": result.detection_method,
+            "attack_type": result.attack_type,
+            "confidence_score": result.confidence_score,
+            "threat_level": result.threat_level,
+        },
+    )
     
     # Step 3: If threat detected, trigger response in background
     if result.threat_detected:
@@ -105,14 +133,15 @@ async def ingest_honeypot_log(
             confidence=result.confidence_score
         )
         
+        # Store threat event
+        threat_event = await store_threat_event(db, log, result)
+        await broadcast_realtime_alert(threat_event, result)
         background_tasks.add_task(
             handle_threat_response,
+            threat_event.id,
             result,
             log
         )
-        
-        # Store threat event
-        await store_threat_event(db, log, result)
     
     return result
 
@@ -134,26 +163,70 @@ async def ingest_batch(
     }
 
 
-async def handle_threat_response(detection: DetectionResult, log: HoneypotLog):
+async def handle_threat_response(threat_event_id: int, detection: DetectionResult, log: HoneypotLog):
     """Background task for threat response"""
     if response_orchestrator is None:
         logger.error("Response orchestrator not initialized")
         return
-    
-    context = {
-        "source_ip": log.source_ip,
-        "honeypot_type": log.honeypot_type,
-        "timestamp": log.timestamp
-    }
-    
-    decision = await response_orchestrator.decide_response(detection, context)
-    
-    logger.info(
-        "Response decision made",
-        action=decision.action_type,
-        target=decision.target,
-        automated=not decision.requires_approval
-    )
+
+    async with async_session() as db:
+        from app.api.v1.endpoints.dashboard import broadcast_stats_update, broadcast_system_event
+
+        context = {
+            "source_ip": log.source_ip,
+            "honeypot_type": log.honeypot_type,
+            "timestamp": log.timestamp,
+            "session_id": log.session_id,
+            "threat_event_id": threat_event_id,
+        }
+
+        decision = await response_orchestrator.decide_response(detection, context)
+        await store_system_log(
+            db,
+            level="INFO",
+            component="response_orchestrator",
+            message="Response decision generated",
+            source_ip=log.source_ip,
+            session_id=log.session_id,
+            details={
+                "threat_event_id": threat_event_id,
+                "action_required": decision.action_required,
+                "action_type": decision.action_type,
+                "priority": decision.priority,
+                "requires_approval": decision.requires_approval,
+                "reasoning": decision.reasoning,
+            },
+        )
+
+        execution_result = await response_orchestrator.execute_response(decision, detection, context)
+        await persist_response_action(db, threat_event_id, decision, execution_result)
+        await sync_blocked_ip_state(db, threat_event_id, decision, execution_result, detection)
+        await store_system_log(
+            db,
+            level="INFO" if execution_result.get("status") != "failed" else "ERROR",
+            component="response_execution",
+            message="Response execution completed",
+            source_ip=log.source_ip,
+            session_id=log.session_id,
+            details={
+                "threat_event_id": threat_event_id,
+                "action_type": decision.action_type,
+                "status": execution_result.get("status"),
+                "target": execution_result.get("target"),
+                "result": execution_result,
+            },
+        )
+        await broadcast_stats_update()
+        await broadcast_system_event(
+            "pipeline_event",
+            {
+                "event": "response_executed",
+                "threat_event_id": threat_event_id,
+                "action_type": decision.action_type,
+                "status": execution_result.get("status"),
+                "target": execution_result.get("target"),
+            },
+        )
 
 
 async def store_honeypot_session(db: AsyncSession, log: HoneypotLog):
@@ -248,3 +321,146 @@ async def store_threat_event(db: AsyncSession, log: HoneypotLog, detection: Dete
     )
     db.add(event)
     await db.commit()
+    await db.refresh(event)
+    return event
+
+
+async def persist_response_action(
+    db: AsyncSession,
+    threat_event_id: int,
+    decision,
+    execution_result: dict,
+):
+    from app.models.database import ResponseAction, ResponseStatus
+
+    status_map = {
+        "executed": ResponseStatus.EXECUTED,
+        "failed": ResponseStatus.FAILED,
+        "pending": ResponseStatus.PENDING,
+        "skipped": ResponseStatus.PENDING,
+    }
+    status = status_map.get(execution_result.get("status"), ResponseStatus.PENDING)
+
+    action = ResponseAction(
+        threat_event_id=threat_event_id,
+        action_type=decision.action_type or execution_result.get("action_type") or "log_alert",
+        target=decision.target or execution_result.get("target") or "unknown",
+        parameters=make_json_safe({
+            "reasoning": decision.reasoning,
+            "estimated_impact": decision.estimated_impact,
+            "priority": decision.priority,
+        }),
+        status=status,
+        result=make_json_safe(execution_result),
+        error_message=execution_result.get("error_message"),
+        automated=not decision.requires_approval,
+        executed_at=datetime.utcnow() if status == ResponseStatus.EXECUTED else None,
+    )
+    db.add(action)
+    await db.commit()
+    return action
+
+
+async def sync_blocked_ip_state(
+    db: AsyncSession,
+    threat_event_id: int,
+    decision,
+    execution_result: dict,
+    detection: DetectionResult,
+):
+    from sqlalchemy import select
+    from app.models.database import BlockedIP
+
+    if decision.action_type != "block_ip" or execution_result.get("status") != "executed":
+        return
+
+    target_ip = execution_result.get("target")
+    stmt = select(BlockedIP).where(BlockedIP.ip_address == target_ip)
+    result = await db.execute(stmt)
+    blocked = result.scalar_one_or_none()
+
+    if blocked:
+        blocked.last_blocked_at = datetime.utcnow()
+        blocked.block_count += 1
+        blocked.reason = detection.attack_type
+        blocked.threat_event_id = threat_event_id
+        blocked.is_active = True
+        blocked.unblocked_at = None
+        blocked.unblocked_by = None
+    else:
+        blocked = BlockedIP(
+            ip_address=target_ip,
+            reason=detection.attack_type,
+            threat_event_id=threat_event_id,
+            is_active=True,
+        )
+        db.add(blocked)
+
+    await db.commit()
+
+
+async def store_system_log(
+    db: AsyncSession,
+    level: str,
+    component: str,
+    message: str,
+    details: Optional[dict] = None,
+    source_ip: Optional[str] = None,
+    session_id: Optional[str] = None,
+):
+    from app.models.database import SystemLog
+
+    entry = SystemLog(
+        level=level,
+        component=component,
+        message=message,
+        details=make_json_safe(details or {}),
+        source_ip=source_ip,
+        session_id=session_id,
+    )
+    db.add(entry)
+    await db.commit()
+    return entry
+
+
+async def broadcast_realtime_alert(threat_event, detection: DetectionResult):
+    from app.api.v1.endpoints.dashboard import broadcast_stats_update, broadcast_system_event, broadcast_threat_alert
+
+    alert = ThreatAlert(
+        id=threat_event.id,
+        timestamp=threat_event.timestamp,
+        source_ip=threat_event.source_ip,
+        threat_level=threat_event.threat_level.value if hasattr(threat_event.threat_level, "value") else str(threat_event.threat_level),
+        attack_type=threat_event.attack_type.value if hasattr(threat_event.attack_type, "value") else str(threat_event.attack_type),
+        confidence=detection.confidence_score,
+        status=threat_event.status,
+        details={
+            "detection_method": detection.detection_method,
+            "signature_match": detection.signature_match,
+            "mitre_tactic": threat_event.mitre_tactic,
+            "mitre_technique": threat_event.mitre_technique,
+        },
+    )
+    await broadcast_threat_alert(alert)
+    await broadcast_stats_update()
+    await broadcast_system_event(
+        "pipeline_event",
+        {
+            "event": "threat_detected",
+            "threat_event_id": threat_event.id,
+            "source_ip": threat_event.source_ip,
+            "detection_method": detection.detection_method,
+        },
+    )
+
+
+def make_json_safe(value):
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {key: make_json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [make_json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [make_json_safe(item) for item in value]
+    return value

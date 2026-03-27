@@ -4,6 +4,7 @@ import joblib
 import tensorflow as tf
 from typing import Dict, List, Optional, Any
 from datetime import datetime
+from time import perf_counter
 import structlog
 from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
@@ -30,6 +31,7 @@ class DetectionEngine:
         self.classifier_model = None
         self.scaler = StandardScaler()
         self.feature_cache = {}
+        self.initialized = False
         
     async def load_models(self):
         """Load trained ML models from Dionaea training"""
@@ -102,26 +104,53 @@ class DetectionEngine:
     async def analyze(self, log: HoneypotLog) -> DetectionResult:
         """
         Main analysis pipeline:
-        1. Feature extraction
-        2. Signature matching (fast path)
-        3. ML anomaly detection (if no signature match)
-        4. Reinforcement learning adjustment
+        1. Fast packet/header prescan to select detector
+        2. Execute the selected detector path
+        3. Fall back if the selected path does not produce a threat
+        4. Return a normalized detection result
         """
         if not self.initialized:
             await self.load_models()
-        
-        # Step 2: Extract Dionaea-compatible features
-        features = self._extract_dionaea_features(log)
 
-        # Step 1: Quick signature check (fast path)
-        sig_match = self._check_signatures(log, features)
-        if sig_match and sig_match.get('confidence', 0) > 0.95:
-            return self._create_signature_result(sig_match, {})
-        
-        # Step 3: Use preprocessor if available
+        prescan = self._fast_header_scan(log)
+        logger.info(
+            "Detection prescan completed",
+            source_ip=log.source_ip,
+            session_id=log.session_id,
+            preferred_method=prescan["preferred_method"],
+            duration_us=prescan["duration_us"],
+            indicators=prescan["indicators"],
+        )
+
+        features = self._extract_dionaea_features(log)
+        features["prescan_duration_us"] = prescan["duration_us"]
+        features["prescan_indicator_count"] = len(prescan["indicators"])
+        features["preferred_detection_method"] = prescan["preferred_method"]
+
+        if prescan["preferred_method"] == "signature":
+            sig_match = self._check_signatures(log, features)
+            if sig_match:
+                logger.warning(
+                    "Signature detection matched",
+                    source_ip=log.source_ip,
+                    session_id=log.session_id,
+                    signature_id=sig_match["id"],
+                    attack_type=sig_match["attack_type"],
+                )
+                return self._create_signature_result(sig_match, features)
+
+            logger.info(
+                "Signature route produced no match, falling back to anomaly detection",
+                source_ip=log.source_ip,
+                session_id=log.session_id,
+            )
+
+        return self._run_anomaly_detection(log, features)
+
+    def _run_anomaly_detection(self, log: HoneypotLog, features: Dict[str, Any]) -> DetectionResult:
+        """Run trained ML/anomaly pipeline after routing."""
         if hasattr(self, 'preprocessor') and self.preprocessor and self.preprocessor.is_fitted:
             try:
-                # Convert to array in correct order
                 feature_vector = self._vectorize_for_preprocessor(features)
                 X_scaled = self.preprocessor.scaler.transform([feature_vector])
             except Exception as e:
@@ -130,7 +159,6 @@ class DetectionEngine:
         else:
             X_scaled = [list(features.values())]
         
-        # Step 4: Binary classification (attack vs normal)
         is_attack = False
         attack_confidence = 0.0
         
@@ -143,14 +171,11 @@ class DetectionEngine:
             except Exception as e:
                 logger.warning("Binary classifier failed", error=str(e))
         
-        # Step 5: Anomaly detection (backup)
         anomaly_score = 0.0
         if hasattr(self, 'anomaly_model') and self.anomaly_model:
             try:
                 raw_score = self.anomaly_model.score_samples(X_scaled)[0]
-                # Normalize to 0-1
                 anomaly_score = 1.0 / (1.0 + np.exp(-raw_score))
-                # Anomaly detector returns -1 for anomaly
                 is_anomaly = self.anomaly_model.predict(X_scaled)[0] == -1
                 if is_anomaly:
                     is_attack = True
@@ -158,42 +183,86 @@ class DetectionEngine:
             except Exception as e:
                 logger.warning("Anomaly detector failed", error=str(e))
         
-        # Step 6: If attack detected, classify category
         attack_type = AttackType.UNKNOWN
         if is_attack and hasattr(self, 'category_model') and self.category_model:
             try:
                 cat_prediction = self.category_model.predict(X_scaled)[0]
-                # Map numeric prediction to AttackType
                 attack_type = self._map_category_to_attack_type(cat_prediction)
             except Exception as e:
                 logger.warning("Category classifier failed", error=str(e))
-                # Infer from features
                 attack_type = self._infer_attack_type_from_features(features)
         
-        # Step 7: Determine threat level
         if is_attack:
             threat_level = self._calculate_threat_level(attack_confidence, anomaly_score, attack_type)
-            
+            logger.warning(
+                "Anomaly detection flagged threat",
+                source_ip=log.source_ip,
+                session_id=log.session_id,
+                attack_type=attack_type.value,
+                confidence=attack_confidence,
+                anomaly_score=anomaly_score,
+                threat_level=threat_level.value if hasattr(threat_level, "value") else threat_level,
+            )
+
             return DetectionResult(
                 threat_detected=True,
                 threat_level=threat_level,
                 attack_type=attack_type,
                 confidence_score=attack_confidence,
-                detection_method="ml_dionaea_trained",
+                detection_method="anomaly",
                 anomaly_score=anomaly_score,
                 features=features,
                 mitre_mapping=self._map_to_mitre(attack_type.value),
                 recommendation=f"Trained model detected {attack_type.value} with {attack_confidence:.1%} confidence"
             )
         
-        # No threat
         return DetectionResult(
             threat_detected=False,
             threat_level=ThreatLevel.LOW,
             confidence_score=1.0 - attack_confidence,
-            detection_method="ml_dionaea_trained",
+            detection_method="anomaly",
             features=features
         )
+
+    def _fast_header_scan(self, log: HoneypotLog) -> Dict[str, Any]:
+        """
+        Perform a very small prescan on packet/session header fields to pick
+        the most appropriate detection method before deeper inspection.
+        """
+        started = perf_counter()
+        indicators = []
+        preferred_method = "anomaly"
+
+        meta = getattr(log, "meta_data", {}) or {}
+        protocol = (log.protocol or "").lower()
+        event_type = (log.event_type or "").lower()
+        command = (log.command or "").lower()
+        payload = (log.payload or "").lower()
+
+        if log.dest_port in {21, 22, 23, 445, 3389}:
+            indicators.append(f"monitored_port:{log.dest_port}")
+        if event_type in {"login_attempt", "command_execution", "file_upload"}:
+            indicators.append(f"event:{event_type}")
+        if any(token in command for token in ("wget", "curl", "chmod", "powershell")):
+            indicators.append("command_ioc")
+        if any(token in payload for token in ("failed password", "/bin/sh", "cmd.exe")):
+            indicators.append("payload_ioc")
+        if meta.get("dionaea_download_url") or meta.get("dionaea_file_type"):
+            indicators.append("download_observed")
+        if protocol in {"tcp", "udp"}:
+            indicators.append(f"transport:{protocol}")
+
+        if {"command_ioc", "payload_ioc", "download_observed"} & set(indicators):
+            preferred_method = "signature"
+        elif len(indicators) >= 3 and log.dest_port not in {80, 443}:
+            preferred_method = "signature"
+
+        duration_us = max(int((perf_counter() - started) * 1_000_000), 1)
+        return {
+            "preferred_method": preferred_method,
+            "duration_us": duration_us,
+            "indicators": indicators,
+        }
     
     def _extract_features(self, log: HoneypotLog) -> Dict[str, Any]:
         """Extract numerical and categorical features from log"""
