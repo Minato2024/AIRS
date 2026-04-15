@@ -1,4 +1,5 @@
 import asyncio
+import json
 import numpy as np
 import joblib
 import tensorflow as tf
@@ -83,24 +84,138 @@ class DetectionEngine:
             await self._load_fallback_models()
             
     async def _load_signatures(self):
-        """Load YARA-style or custom signatures"""
-        # Placeholder: Load from database or file
-        self.signature_rules = [
+        """Load custom signatures from disk with a built-in fallback."""
+        signature_dir = Path(settings.SIGNATURE_DB_PATH)
+        loaded_rules: List[Dict[str, Any]] = []
+
+        if signature_dir.exists():
+            for rule_file in sorted(signature_dir.rglob("*.json")):
+                try:
+                    with rule_file.open("r", encoding="utf-8") as handle:
+                        payload = json.load(handle)
+                except Exception as exc:
+                    logger.warning(
+                        "Skipping invalid signature file",
+                        path=str(rule_file),
+                        error=str(exc),
+                    )
+                    continue
+
+                rules = payload.get("rules", payload if isinstance(payload, list) else [])
+                if not isinstance(rules, list):
+                    logger.warning(
+                        "Skipping signature file with unsupported structure",
+                        path=str(rule_file),
+                    )
+                    continue
+
+                for raw_rule in rules:
+                    normalized = self._normalize_signature_rule(raw_rule, rule_file)
+                    if normalized:
+                        loaded_rules.append(normalized)
+
+        if not loaded_rules:
+            loaded_rules = self._get_builtin_signatures()
+            logger.warning(
+                "No signature files loaded from disk, using built-in fallback rules",
+                path=str(signature_dir),
+            )
+
+        self.signature_rules = sorted(
+            loaded_rules,
+            key=lambda rule: (
+                self._severity_rank(rule.get("threat_level", ThreatLevel.LOW.value)),
+                float(rule.get("confidence", 0.5)),
+            ),
+            reverse=True,
+        )
+        logger.info(
+            "Signature rules loaded",
+            count=len(self.signature_rules),
+            path=str(signature_dir),
+        )
+
+    def _normalize_signature_rule(self, rule: Dict[str, Any], source: Path) -> Optional[Dict[str, Any]]:
+        """Validate and normalize a signature rule loaded from disk."""
+        if not isinstance(rule, dict):
+            logger.warning("Skipping non-object signature rule", path=str(source))
+            return None
+
+        if rule.get("enabled", True) is False:
+            return None
+
+        required = {"id", "name", "pattern", "attack_type", "threat_level"}
+        missing = sorted(field for field in required if not rule.get(field))
+        if missing:
+            logger.warning(
+                "Skipping incomplete signature rule",
+                path=str(source),
+                missing_fields=missing,
+                rule_id=rule.get("id"),
+            )
+            return None
+
+        normalized = dict(rule)
+        normalized["attack_type"] = str(rule["attack_type"]).strip().lower()
+        normalized["threat_level"] = str(rule["threat_level"]).strip().lower()
+        normalized["confidence"] = float(rule.get("confidence", 0.95))
+        normalized["fields"] = [
+            str(field).strip().lower()
+            for field in rule.get("fields", ["command", "payload", "username", "password", "event_type"])
+            if str(field).strip()
+        ]
+        normalized["event_types"] = [str(value).strip().lower() for value in rule.get("event_types", []) if str(value).strip()]
+        normalized["protocols"] = [str(value).strip().lower() for value in rule.get("protocols", []) if str(value).strip()]
+        normalized["honeypot_types"] = [str(value).strip().lower() for value in rule.get("honeypot_types", []) if str(value).strip()]
+        normalized["dest_ports"] = [int(value) for value in rule.get("dest_ports", [])]
+        normalized["source_ports"] = [int(value) for value in rule.get("source_ports", [])]
+        normalized["require_meta_keys"] = [
+            str(value).strip()
+            for value in rule.get("require_meta_keys", [])
+            if str(value).strip()
+        ]
+        normalized["match_mode"] = str(rule.get("match_mode", "any")).strip().lower()
+        normalized["tags"] = [str(tag).strip().lower() for tag in rule.get("tags", []) if str(tag).strip()]
+        normalized["source_file"] = str(source)
+        normalized["mitre_mappings"] = rule.get("mitre_mappings") or []
+        return normalized
+
+    def _get_builtin_signatures(self) -> List[Dict[str, Any]]:
+        return [
             {
                 "id": "SIG-001",
                 "name": "SSH Brute Force",
-                "pattern": r"Failed password for .* from (\d+\.\d+\.\d+\.\d+)",
+                "pattern": r"failed password|authentication failure|invalid user",
                 "attack_type": "brute_force",
-                "threat_level": "high"
+                "threat_level": "high",
+                "confidence": 0.92,
+                "fields": ["payload", "command", "username", "event_type"],
+                "tags": ["ssh", "authentication"],
+                "mitre_mappings": [],
+                "source_file": "builtin",
             },
             {
-                "id": "SIG-002", 
+                "id": "SIG-002",
                 "name": "Common Malware Download",
-                "pattern": r"(wget|curl).*\.(sh|bin|elf)",
+                "pattern": r"(wget|curl|bitsadmin|invoke-webrequest).*(\.sh|\.bin|\.elf|\.ps1|\.exe)",
                 "attack_type": "malware",
-                "threat_level": "critical"
-            }
+                "threat_level": "critical",
+                "confidence": 0.97,
+                "fields": ["command", "payload"],
+                "tags": ["download", "malware"],
+                "mitre_mappings": [],
+                "source_file": "builtin",
+            },
         ]
+
+    def _severity_rank(self, threat_level: str) -> int:
+        ranks = {
+            ThreatLevel.LOW.value: 1,
+            ThreatLevel.MEDIUM.value: 2,
+            ThreatLevel.HIGH.value: 3,
+            ThreatLevel.CRITICAL.value: 4,
+        }
+        return ranks.get(str(threat_level).lower(), 0)
         
     async def analyze(self, log: HoneypotLog) -> DetectionResult:
         """
@@ -308,13 +423,76 @@ class DetectionEngine:
     def _check_signatures(self, log: HoneypotLog, features: Dict = None) -> Optional[Dict]:
         """Check against known attack signatures"""
         import re
-        
-        check_string = f"{log.command or ''} {log.payload or ''} {log.username or ''}"
-        
+
+        field_values = self._build_signature_field_values(log)
+
         for rule in self.signature_rules:
+            if not self._signature_rule_applies(rule, log):
+                continue
+
+            check_string = " ".join(
+                field_values.get(field, "")
+                for field in rule.get("fields", [])
+            ).strip()
+
+            if not check_string:
+                continue
+
+            if rule.get("match_mode") == "all":
+                pattern_tokens = [token.strip() for token in str(rule["pattern"]).split("&&") if token.strip()]
+                if pattern_tokens and all(re.search(token, check_string, re.IGNORECASE) for token in pattern_tokens):
+                    return rule
+                continue
+
             if re.search(rule["pattern"], check_string, re.IGNORECASE):
                 return rule
         return None
+
+    def _build_signature_field_values(self, log: HoneypotLog) -> Dict[str, str]:
+        """Flatten core log fields and metadata for signature matching."""
+        meta = getattr(log, "meta_data", {}) or {}
+        field_values = {
+            "command": log.command or "",
+            "payload": log.payload or "",
+            "username": log.username or "",
+            "password": log.password or "",
+            "event_type": log.event_type or "",
+            "protocol": log.protocol or "",
+            "source_ip": log.source_ip or "",
+            "source_port": str(log.source_port),
+            "dest_port": str(log.dest_port),
+            "session_id": log.session_id or "",
+            "honeypot_type": getattr(log, "honeypot_type", "") or "",
+            "meta": " ".join(f"{key}={value}" for key, value in meta.items()),
+            "meta_json": json.dumps(meta, sort_keys=True, default=str),
+        }
+
+        for key, value in meta.items():
+            field_values[f"meta.{str(key).strip().lower()}"] = "" if value is None else str(value)
+
+        return field_values
+
+    def _signature_rule_applies(self, rule: Dict[str, Any], log: HoneypotLog) -> bool:
+        """Apply contextual filters before regex matching."""
+        meta = getattr(log, "meta_data", {}) or {}
+        event_type = (log.event_type or "").lower()
+        protocol = (log.protocol or "").lower()
+        honeypot_type = (getattr(log, "honeypot_type", "") or "").lower()
+
+        if rule.get("event_types") and event_type not in rule["event_types"]:
+            return False
+        if rule.get("protocols") and protocol not in rule["protocols"]:
+            return False
+        if rule.get("honeypot_types") and honeypot_type not in rule["honeypot_types"]:
+            return False
+        if rule.get("dest_ports") and log.dest_port not in rule["dest_ports"]:
+            return False
+        if rule.get("source_ports") and log.source_port not in rule["source_ports"]:
+            return False
+        if rule.get("require_meta_keys") and not all(key in meta and meta[key] not in (None, "") for key in rule["require_meta_keys"]):
+            return False
+
+        return True
     
     async def _detect_anomaly(self, features: Dict) -> Dict:
         """Detect anomalies using Isolation Forest or Autoencoder"""
@@ -369,16 +547,29 @@ class DetectionEngine:
         return np.array(ordered)
     
     def _create_signature_result(self, log: HoneypotLog, match: Dict, features: Dict) -> DetectionResult:
+        mitre_mappings = match.get("mitre_mappings") or self._map_to_mitre_list(
+            match["attack_type"],
+            log=log,
+            features=features,
+            signature_match=match["id"],
+        )
+        primary_mapping = mitre_mappings[0] if mitre_mappings else self._map_to_mitre(
+            match["attack_type"],
+            log=log,
+            features=features,
+            signature_match=match["id"],
+        )
         return DetectionResult(
             threat_detected=True,
             threat_level=match["threat_level"],
             attack_type=match["attack_type"],
-            confidence_score=0.95,
+            confidence_score=float(match.get("confidence", 0.95)),
             detection_method="signature",
             signature_match=match["id"],
             features=features,
-            mitre_mapping=self._map_to_mitre(match["attack_type"], log=log, features=features, signature_match=match["id"]),
-            mitre_mappings=self._map_to_mitre_list(match["attack_type"], log=log, features=features, signature_match=match["id"]),
+            mitre_mapping=primary_mapping,
+            mitre_mappings=mitre_mappings,
+            recommendation=f"Signature rule {match['id']} matched: {match['name']}",
         )
     
     def _create_ml_result(self, anomaly: Dict, classification: Dict, features: Dict) -> DetectionResult:
@@ -415,6 +606,22 @@ class DetectionEngine:
     async def cleanup(self):
         """Cleanup resources"""
         logger.info("Detection engine cleanup")
+
+    async def _load_fallback_models(self):
+        """Initialize a safe fallback mode when trained models are unavailable."""
+        self.anomaly_model = None
+        self.classifier_model = None
+        self.category_model = None
+        await self._load_signatures()
+        self.initialized = True
+        logger.info(
+            "Detection engine initialized in signature-first fallback mode",
+            signatures=len(self.signature_rules),
+        )
+
+    async def _load_ml_models(self):
+        """Backward-compatible alias for fallback initialization."""
+        await self._load_fallback_models()
 
     # Add this method to your DetectionEngine class in detection_engine.py
 

@@ -1,0 +1,51 @@
+{
+  "rules": [
+    {
+      "id": "SIG-PRI-001",
+      "name": "Sudo Abuse Pattern",
+      "description": "Detects common privilege-escalation attempts through sudo and su.",
+      "pattern": "sudo\\s+-s|sudo\\s+su|sudo\\s+bash|sudo\\s+sh|su\\s+-\\s*root",
+      "attack_type": "privilege_escalation",
+      "threat_level": "high",
+      "confidence": 0.9,
+      "fields": ["command", "payload"],
+      "tags": ["privilege-escalation", "linux"],
+      "mitre_mappings": [
+        {
+          "tactic": "Privilege Escalation",
+          "tactic_id": "TA0004",
+          "technique": "Exploitation for Privilege Escalation",
+          "technique_id": "T1068",
+          "url": "https://attack.mitre.org/techniques/T1068/"
+        }
+      ]
+    },
+    {
+      "id": "SIG-PRI-002",
+      "name": "Credential Dumping Tool Reference",
+      "description": "Detects common credential-dumping tool references associated with elevated access attempts.",
+      "pattern": "mimikatz|sekurlsa|lsass|procdump.*lsass",
+      "attack_type": "privilege_escalation",
+      "threat_level": "critical",
+      "confidence": 0.95,
+      "fields": ["command", "payload"],
+      "tags": ["privilege-escalation", "credential-access", "windows"],
+      "mitre_mappings": [
+        {
+          "tactic": "Credential Access",
+          "tactic_id": "TA0006",
+          "technique": "OS Credential Dumping",
+          "technique_id": "T1003",
+          "url": "https://attack.mitre.org/techniques/T1003/"
+        },
+        {
+          "tactic": "Privilege Escalation",
+          "tactic_id": "TA0004",
+          "technique": "Access Token Manipulation",
+          "technique_id": "T1134",
+          "url": "https://attack.mitre.org/techniques/T1134/"
+        }
+      ]
+    }
+  ]
+}

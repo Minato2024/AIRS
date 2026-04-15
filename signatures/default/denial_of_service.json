@@ -1,0 +1,24 @@
+{
+  "rules": [
+    {
+      "id": "SIG-DOS-001",
+      "name": "Flooding Tool Invocation",
+      "description": "Detects common denial-of-service tooling references.",
+      "pattern": "hping3|slowloris|udp flood|syn flood|goldeneye|xerxes",
+      "attack_type": "denial_of_service",
+      "threat_level": "high",
+      "confidence": 0.88,
+      "fields": ["command", "payload"],
+      "tags": ["dos", "flooding"],
+      "mitre_mappings": [
+        {
+          "tactic": "Impact",
+          "tactic_id": "TA0040",
+          "technique": "Network Denial of Service",
+          "technique_id": "T1498",
+          "url": "https://attack.mitre.org/techniques/T1498/"
+        }
+      ]
+    }
+  ]
+}

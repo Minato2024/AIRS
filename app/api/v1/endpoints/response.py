@@ -6,6 +6,7 @@ from datetime import datetime
 from app.models.database import get_db, ResponseStatus
 from app.models.schemas import ResponseDecision, ResponseActionResult
 from app.services.response_orchestrator import ResponseOrchestrator
+from app.core.event_bus import event_bus
 from app.core.logging import get_logger
 
 router = APIRouter()
@@ -86,10 +87,8 @@ async def unblock_ip(
     # This would call your response orchestrator or firewall integration
     
     logger.info("IP manually unblocked", ip_address=ip_address, reason=reason)
-    from app.api.v1.endpoints.dashboard import broadcast_stats_update, broadcast_system_event
-    await broadcast_stats_update()
-    await broadcast_system_event(
-        "response_updated",
+    await event_bus.publish(
+        "response.updated",
         {
             "event": "ip_unblocked",
             "ip_address": ip_address,
@@ -231,10 +230,8 @@ async def execute_manual_response(
         action_type=action_type,
         target=target
     )
-    from app.api.v1.endpoints.dashboard import broadcast_stats_update, broadcast_system_event
-    await broadcast_stats_update()
-    await broadcast_system_event(
-        "response_updated",
+    await event_bus.publish(
+        "response.updated",
         {
             "event": "manual_response_executed",
             "threat_event_id": threat_event_id,
@@ -289,9 +286,8 @@ async def update_response_settings(
         auto_response=settings.AUTO_RESPONSE_ENABLED,
         cooldown=settings.RESPONSE_COOLDOWN_SECONDS
     )
-    from app.api.v1.endpoints.dashboard import broadcast_system_event
-    await broadcast_system_event(
-        "settings_updated",
+    await event_bus.publish(
+        "settings.updated",
         {
             "auto_response_enabled": settings.AUTO_RESPONSE_ENABLED,
             "response_cooldown_seconds": settings.RESPONSE_COOLDOWN_SECONDS,

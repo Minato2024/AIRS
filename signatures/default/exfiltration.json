@@ -1,0 +1,46 @@
+{
+  "rules": [
+    {
+      "id": "SIG-EXF-001",
+      "name": "Alternative Protocol Exfiltration",
+      "description": "Detects outbound data movement over SCP, SFTP, FTP, or netcat-style channels.",
+      "pattern": "scp\\s+|sftp\\s+|ftp\\s+|curl\\s+-t|nc\\s+|netcat\\s+",
+      "attack_type": "exfiltration",
+      "threat_level": "critical",
+      "confidence": 0.94,
+      "fields": ["command", "payload"],
+      "tags": ["exfiltration", "alternative-protocol"],
+      "mitre_mappings": [
+        {
+          "tactic": "Exfiltration",
+          "tactic_id": "TA0010",
+          "technique": "Exfiltration Over Alternative Protocol",
+          "technique_id": "T1048",
+          "url": "https://attack.mitre.org/techniques/T1048/"
+        }
+      ]
+    },
+    {
+      "id": "SIG-EXF-002",
+      "name": "FTP Bulk Transfer Pattern",
+      "description": "Detects suspicious FTP command activity in honeypot metadata.",
+      "pattern": "put|mput|append|stor",
+      "attack_type": "exfiltration",
+      "threat_level": "high",
+      "confidence": 0.87,
+      "fields": ["meta.ftp_command", "payload"],
+      "event_types": ["command_execution", "file_upload"],
+      "require_meta_keys": ["ftp_command"],
+      "tags": ["ftp", "exfiltration"],
+      "mitre_mappings": [
+        {
+          "tactic": "Exfiltration",
+          "tactic_id": "TA0010",
+          "technique": "Exfiltration Over Alternative Protocol",
+          "technique_id": "T1048",
+          "url": "https://attack.mitre.org/techniques/T1048/"
+        }
+      ]
+    }
+  ]
+}

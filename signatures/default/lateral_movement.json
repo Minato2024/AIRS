@@ -1,0 +1,47 @@
+{
+  "rules": [
+    {
+      "id": "SIG-LAT-001",
+      "name": "Remote Admin Tool Usage",
+      "description": "Detects common remote service and administrative execution patterns.",
+      "pattern": "psexec|wmic|winrm|mstsc|smbexec|at\\\\\\\\|schtasks",
+      "attack_type": "lateral_movement",
+      "threat_level": "high",
+      "confidence": 0.91,
+      "fields": ["command", "payload"],
+      "dest_ports": [135, 139, 445, 3389, 5985, 5986],
+      "tags": ["lateral-movement", "remote-services"],
+      "mitre_mappings": [
+        {
+          "tactic": "Lateral Movement",
+          "tactic_id": "TA0008",
+          "technique": "Remote Services",
+          "technique_id": "T1021",
+          "url": "https://attack.mitre.org/techniques/T1021/"
+        }
+      ]
+    },
+    {
+      "id": "SIG-LAT-002",
+      "name": "SMB Remote Service Activity",
+      "description": "Detects SMB-oriented movement patterns in Dionaea metadata.",
+      "pattern": "tree connect|nt create|session setup|ipc\\$|admin\\$",
+      "attack_type": "lateral_movement",
+      "threat_level": "high",
+      "confidence": 0.88,
+      "fields": ["meta.smb_command", "meta.smb_file", "payload"],
+      "dest_ports": [139, 445],
+      "require_meta_keys": ["smb_command"],
+      "tags": ["smb", "lateral-movement"],
+      "mitre_mappings": [
+        {
+          "tactic": "Lateral Movement",
+          "tactic_id": "TA0008",
+          "technique": "Remote Services",
+          "technique_id": "T1021.002",
+          "url": "https://attack.mitre.org/techniques/T1021/002/"
+        }
+      ]
+    }
+  ]
+}

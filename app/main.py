@@ -11,9 +11,57 @@ from app.models.database import init_db, close_db
 from app.services.detection_engine import DetectionEngine
 from app.services.response_orchestrator import ResponseOrchestrator
 from app.core.logging import configure_logging
+from app.core.event_bus import Event, event_bus
 
 # Configure structured logging
 logger = configure_logging()
+
+
+async def _handle_threat_detected(event: Event):
+    from app.api.v1.endpoints.dashboard import broadcast_stats_update, broadcast_system_event, broadcast_threat_alert
+    from app.models.schemas import ThreatAlert
+
+    alert_payload = event.payload.get("alert")
+    if alert_payload:
+        await broadcast_threat_alert(ThreatAlert(**alert_payload))
+
+    await broadcast_stats_update()
+    await broadcast_system_event(
+        "pipeline_event",
+        {
+            "event": "threat_detected",
+            "threat_event_id": event.payload.get("threat_event_id"),
+            "source_ip": event.payload.get("source_ip"),
+            "detection_method": event.payload.get("detection_method"),
+        },
+    )
+
+
+async def _handle_response_executed(event: Event):
+    from app.api.v1.endpoints.dashboard import broadcast_stats_update, broadcast_system_event
+
+    await broadcast_stats_update()
+    await broadcast_system_event("pipeline_event", event.payload)
+
+
+async def _handle_threat_status_changed(event: Event):
+    from app.api.v1.endpoints.dashboard import broadcast_stats_update, broadcast_system_event
+
+    await broadcast_stats_update()
+    await broadcast_system_event("threat_status_changed", event.payload)
+
+
+async def _handle_response_updated(event: Event):
+    from app.api.v1.endpoints.dashboard import broadcast_stats_update, broadcast_system_event
+
+    await broadcast_stats_update()
+    await broadcast_system_event("response_updated", event.payload)
+
+
+async def _handle_settings_updated(event: Event):
+    from app.api.v1.endpoints.dashboard import broadcast_system_event
+
+    await broadcast_system_event("settings_updated", event.payload)
 
 
 @asynccontextmanager
@@ -41,6 +89,7 @@ async def lifespan(app: FastAPI):
     try:
         app.state.detection_engine = DetectionEngine()
         app.state.response_orchestrator = ResponseOrchestrator()
+        app.state.event_bus = event_bus
         
         # Inject into honeypot router
         from app.api.v1.endpoints import honeypot
@@ -51,6 +100,16 @@ async def lifespan(app: FastAPI):
 
         # Load ML models
         await app.state.detection_engine.load_models()
+
+        app.state.event_bus_handlers = {
+            "threat.detected": _handle_threat_detected,
+            "response.executed": _handle_response_executed,
+            "threat.status_changed": _handle_threat_status_changed,
+            "response.updated": _handle_response_updated,
+            "settings.updated": _handle_settings_updated,
+        }
+        for topic, handler in app.state.event_bus_handlers.items():
+            await event_bus.subscribe(topic, handler)
         
         logger.info("Core services initialized successfully")
     except Exception as e:
@@ -67,6 +126,10 @@ async def lifespan(app: FastAPI):
     # Cleanup services
     if hasattr(app.state, 'detection_engine'):
         await app.state.detection_engine.cleanup()
+
+    if hasattr(app.state, "event_bus_handlers"):
+        for topic, handler in app.state.event_bus_handlers.items():
+            await event_bus.unsubscribe(topic, handler)
     
     # Close database connections
     await close_db()

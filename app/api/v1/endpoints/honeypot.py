@@ -7,6 +7,7 @@ from app.models.database import async_session, get_db
 from app.models.schemas import HoneypotLog, DetectionResult, ThreatAlert
 from app.services.detection_engine import DetectionEngine
 from app.services.response_orchestrator import ResponseOrchestrator
+from app.core.event_bus import event_bus
 from app.core.logging import get_logger
 
 router = APIRouter()
@@ -170,8 +171,6 @@ async def handle_threat_response(threat_event_id: int, detection: DetectionResul
         return
 
     async with async_session() as db:
-        from app.api.v1.endpoints.dashboard import broadcast_stats_update, broadcast_system_event
-
         context = {
             "source_ip": log.source_ip,
             "honeypot_type": log.honeypot_type,
@@ -216,9 +215,8 @@ async def handle_threat_response(threat_event_id: int, detection: DetectionResul
                 "result": execution_result,
             },
         )
-        await broadcast_stats_update()
-        await broadcast_system_event(
-            "pipeline_event",
+        await event_bus.publish(
+            "response.executed",
             {
                 "event": "response_executed",
                 "threat_event_id": threat_event_id,
@@ -425,8 +423,6 @@ async def store_system_log(
 
 
 async def broadcast_realtime_alert(threat_event, detection: DetectionResult):
-    from app.api.v1.endpoints.dashboard import broadcast_stats_update, broadcast_system_event, broadcast_threat_alert
-
     alert = ThreatAlert(
         id=threat_event.id,
         timestamp=threat_event.timestamp,
@@ -443,12 +439,10 @@ async def broadcast_realtime_alert(threat_event, detection: DetectionResult):
             "mitre_mappings": threat_event.mitre_mappings or detection.mitre_mappings,
         },
     )
-    await broadcast_threat_alert(alert)
-    await broadcast_stats_update()
-    await broadcast_system_event(
-        "pipeline_event",
+    await event_bus.publish(
+        "threat.detected",
         {
-            "event": "threat_detected",
+            "alert": alert.model_dump(),
             "threat_event_id": threat_event.id,
             "source_ip": threat_event.source_ip,
             "detection_method": detection.detection_method,

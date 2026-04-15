@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from app.models.database import get_db
 from app.models.schemas import DetectionResult, DetectionRequest, ThreatLevel, AttackType
 from app.services.detection_engine import DetectionEngine
+from app.core.event_bus import event_bus
 from app.core.logging import get_logger
 
 router = APIRouter()
@@ -222,10 +223,8 @@ async def update_threat_status(
         new_status=status,
         assigned_to=assigned_to
     )
-    from app.api.v1.endpoints.dashboard import broadcast_stats_update, broadcast_system_event
-    await broadcast_stats_update()
-    await broadcast_system_event(
-        "threat_status_changed",
+    await event_bus.publish(
+        "threat.status_changed",
         {
             "threat_id": threat_id,
             "status": status,

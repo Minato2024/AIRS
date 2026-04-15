@@ -1,0 +1,44 @@
+{
+  "rules": [
+    {
+      "id": "SIG-SSH-001",
+      "name": "SSH Password Guessing",
+      "description": "Detects repeated failed SSH-style password guessing activity.",
+      "pattern": "failed password|authentication failure|invalid user|login attempt",
+      "attack_type": "brute_force",
+      "threat_level": "high",
+      "confidence": 0.93,
+      "fields": ["payload", "event_type", "username", "command"],
+      "tags": ["ssh", "authentication", "credential-access"],
+      "mitre_mappings": [
+        {
+          "tactic": "Credential Access",
+          "tactic_id": "TA0006",
+          "technique": "Brute Force: Password Guessing",
+          "technique_id": "T1110.001",
+          "url": "https://attack.mitre.org/techniques/T1110/001/"
+        }
+      ]
+    },
+    {
+      "id": "SIG-SSH-002",
+      "name": "Default Credentials Attempt",
+      "description": "Detects common default username and password combinations in honeypot sessions.",
+      "pattern": "^(root|admin|test|ubnt|oracle)\\s+(root|admin|1234|password|toor)$",
+      "attack_type": "brute_force",
+      "threat_level": "medium",
+      "confidence": 0.86,
+      "fields": ["username", "password"],
+      "tags": ["default-creds", "authentication"],
+      "mitre_mappings": [
+        {
+          "tactic": "Credential Access",
+          "tactic_id": "TA0006",
+          "technique": "Brute Force",
+          "technique_id": "T1110",
+          "url": "https://attack.mitre.org/techniques/T1110/"
+        }
+      ]
+    }
+  ]
+}

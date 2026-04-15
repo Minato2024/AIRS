@@ -1,0 +1,46 @@
+{
+  "rules": [
+    {
+      "id": "SIG-REC-001",
+      "name": "Port Scanning Tool Invocation",
+      "description": "Detects common network scanning tools and invocation patterns.",
+      "pattern": "nmap|masscan|zmap|rustscan|scanrand",
+      "attack_type": "reconnaissance",
+      "threat_level": "medium",
+      "confidence": 0.89,
+      "fields": ["command", "payload", "meta.http_user_agent"],
+      "tags": ["reconnaissance", "scanning"],
+      "mitre_mappings": [
+        {
+          "tactic": "Reconnaissance",
+          "tactic_id": "TA0043",
+          "technique": "Active Scanning",
+          "technique_id": "T1595",
+          "url": "https://attack.mitre.org/techniques/T1595/"
+        }
+      ]
+    },
+    {
+      "id": "SIG-REC-002",
+      "name": "HTTP Recon Probe",
+      "description": "Detects common asset discovery and fingerprinting probes.",
+      "pattern": "/server-status|/\\.git/|/phpmyadmin|/actuator|/manage|/jenkins|/wp-json",
+      "attack_type": "reconnaissance",
+      "threat_level": "medium",
+      "confidence": 0.85,
+      "fields": ["payload", "meta.http_url"],
+      "event_types": ["http_request", "connection", "probe"],
+      "dest_ports": [80, 443, 8080, 8443],
+      "tags": ["web", "reconnaissance", "fingerprinting"],
+      "mitre_mappings": [
+        {
+          "tactic": "Reconnaissance",
+          "tactic_id": "TA0043",
+          "technique": "Active Scanning",
+          "technique_id": "T1595",
+          "url": "https://attack.mitre.org/techniques/T1595/"
+        }
+      ]
+    }
+  ]
+}
